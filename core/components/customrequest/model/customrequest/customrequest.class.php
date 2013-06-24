@@ -57,6 +57,12 @@ class CustomRequest {
 	 */
 	private $alias;
 
+    /**
+     * The found request
+     * @var string $request
+     */
+    private $request;
+
 	/**
 	 * The found url params
 	 * @var int $resourceId
@@ -88,7 +94,7 @@ class CustomRequest {
 			'configsPath' => $this->modx->getOption('customrequest.configsPath', NULL, $corePath . 'configs/'),
 			'debug' => $this->modx->getOption('customrequest.debug', NULL, FALSE),
 				), $config);
-		$this->requests = $this->modx->fromJson($this->config['aliases']);
+            $this->requests = isset($this->config['aliases'])?$this->modx->fromJson($this->config['aliases']):array();
 	}
 
 	/**
@@ -102,13 +108,16 @@ class CustomRequest {
 		$configFiles = glob($this->config['configsPath'] . '*.config.inc.php');
 		// import config files
 		foreach ($configFiles as $configFile) {
+			$requestPrefix = pathinfo($configFile, PATHINFO_BASENAME);
+            $requestPrefix = substr($requestPrefix, 0, -strlen('.config.inc.php')) . '/';
 			// $settings will be defined in each config file
 			$settings = array();
 			include $configFile;
-			foreach ($settings as $setting) {
+			foreach ($settings as $request => $setting) {
 				// fill urlParams if defined
 				$urlParams = (isset($setting['urlParams']) && is_array($setting['urlParams'])) ? $setting['urlParams'] : array();
 				$regEx = (isset($setting['regEx']) && is_array($setting['regEx'])) ? $setting['regEx'] : FALSE;
+                $urlPattern = (isset($setting['urlPattern']) && is_string($setting['urlPattern'])) ? $setting['urlPattern'] : FALSE;
 				if (isset($setting['alias'])) {
 					// if alias is defined, calculate the other values
 					if (isset($setting['resourceId'])) {
@@ -118,7 +127,7 @@ class CustomRequest {
 					} else {
 						// if resourceId could not be calculated, don't use that setting
 						if ($this->config['debug']) {
-							$modx->log(modX::LOG_LEVEL_INFO, 'CustomRequest Plugin: Could not calculate the resourceId for the given alias');
+							$this->modx->log(modX::LOG_LEVEL_INFO, 'CustomRequest Plugin: Could not calculate the resourceId for the given alias');
 						}
 						break;
 					}
@@ -133,16 +142,17 @@ class CustomRequest {
 					} else {
 						// if alias could not be calculated, don't use that setting
 						if ($this->config['debug']) {
-							$modx->log(modX::LOG_LEVEL_INFO, 'CustomRequest Plugin: Could not calculate the alias for the given resourceId');
+							$this->modx->log(modX::LOG_LEVEL_INFO, 'CustomRequest Plugin: Could not calculate the alias for the given resourceId');
 						}
 						break;
 					}
 				}
-				$this->requests[$alias] = array(
+				$this->requests[$requestPrefix . $request] = array(
 					'resourceId' => $resourceId,
 					'alias' => $alias,
 					'urlParams' => $urlParams,
-					'regEx' => $regEx
+					'regEx' => $regEx,
+                    'urlPattern' => $urlPattern
 				);
 			}
 		}
@@ -159,7 +169,7 @@ class CustomRequest {
 	public function searchAliases($search) {
 		$valid = FALSE;
 		// loop through the allowed aliases
-		foreach ($this->requests as $request) {
+		foreach ($this->requests as $request_key => $request) {
 			// check if searched string starts with the alias
 			if (0 === strpos($search, $request['alias'])) {
 				// strip alias from seached string
@@ -168,6 +178,8 @@ class CustomRequest {
 				$this->resourceId = $request['resourceId'];
 				// set the found alias
 				$this->alias = $request['alias'];
+                // set the found alias
+                $this->request = $request_key;
 				// and set the found regEx
 				$this->regEx = $request['regEx'];
 				$valid = TRUE;
@@ -184,14 +196,14 @@ class CustomRequest {
 	 * @return void
 	 */
 	public function setRequest() {
-		$params = str_replace('.html', '', $this->urlParams);
+		$params = trim(str_replace('.html', '', $this->urlParams), '/');
 		if ($this->regEx) {
 			$params = preg_match($this->regEx, $params);
 		} else {
 			$params = explode('/', $params);
 		}
 		if (count($params) >= 1) {
-			$setting = $this->requests[$this->alias];
+			$setting = $this->requests[$this->request];
 			// set the request parameters
 			foreach ($params as $key => $value) {
 				if (isset($setting['urlParams'][$key])) {
@@ -204,6 +216,38 @@ class CustomRequest {
 		$this->modx->sendForward($this->resourceId);
 		return;
 	}
+
+    /**
+     * Build url
+     *
+     * @param $request
+     * @param $args
+     * @param $scheme
+     * @return string
+     */
+    public function makeUrl($request, $args, $scheme = -1) {
+        if (!isset($this->requests[$request]))
+            return '';
+        $setting = $this->requests[$request];
+        $urlParams = $setting['urlParams'];
+        $params = array_intersect_key($args, array_flip($urlParams));
+        if ($setting['urlPattern']) {
+            $url = $setting['urlPattern'];
+            foreach($params as $k=>$v)
+                $url = str_replace('[[+'.$k.']]', $v, $url);
+        } else
+            $url = rtrim($setting['alias'],'/') . '/' . implode('/', $params);
+
+        switch($scheme) {
+            case 'abs':
+                $url = $this->modx->getOption('base_url').$url;
+                break;
+            case 'full':
+                $url = $this->modx->getOption('site_url').$url;
+                break;
+        }
+        return $url;
+    }
 
 }
 
